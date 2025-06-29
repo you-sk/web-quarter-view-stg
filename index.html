@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>クォータービュー・シューティング v7</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        #game-canvas {
+            display: block;
+        }
+        .ui-panel {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            pointer-events: none;
+        }
+        #title-screen {
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+        #title-screen h1 {
+            font-size: 3.5rem;
+            color: #00aaff;
+            text-shadow: 0 0 15px #00aaff;
+            margin-bottom: 10px;
+        }
+        #title-screen h2 {
+            font-size: 1.5rem;
+            color: #ffff00;
+            margin-bottom: 40px;
+        }
+        .start-button {
+            padding: 15px 30px;
+            font-size: 1.8rem;
+            color: #fff;
+            background-color: #00aaff;
+            border: 2px solid #fff;
+            border-radius: 10px;
+            cursor: pointer;
+            pointer-events: auto;
+            text-shadow: 0 0 5px #000;
+            transition: background-color 0.2s, transform 0.2s;
+        }
+        .start-button:hover, .start-button:focus {
+            background-color: #40c4ff;
+            transform: scale(1.05);
+            outline: none;
+        }
+
+        #game-ui {
+            display: none; /* ゲーム開始まで非表示 */
+            justify-content: space-between;
+        }
+        #info-panel {
+            position: absolute;
+            top: 0;
+            left: 0;
+            padding: 20px;
+            width: 100%;
+            box-sizing: border-box;
+            display: flex;
+            justify-content: space-between;
+        }
+        #info-panel div {
+            font-size: 1.2rem;
+            text-shadow: 0 0 5px #00aaff;
+        }
+        #game-over-panel {
+            display: none;
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+        #game-over-panel h1 {
+            margin: 0;
+            font-size: 3rem;
+            color: #ff4500;
+            text-shadow: 0 0 10px #ff0000;
+        }
+        #game-over-panel p {
+            font-size: 1.2rem;
+            margin-top: 15px;
+        }
+        #restart-button {
+            padding: 10px 25px;
+            margin-top: 20px;
+            font-size: 1.5rem;
+            color: #fff;
+            background-color: #ff4500;
+            border: 2px solid #fff;
+            border-radius: 10px;
+            cursor: pointer;
+            pointer-events: auto;
+            text-shadow: 0 0 5px #000;
+            transition: background-color 0.2s;
+        }
+        #restart-button:hover, #restart-button:focus {
+            background-color: #ff6347;
+            outline: none;
+        }
+        #controls-info {
+             position: absolute;
+             bottom: 20px;
+             width: 100%;
+             text-align: center;
+             color: #aaa;
+             font-size: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div id="title-screen" class="ui-panel">
+        <h1>QUARTER SHOOTER</h1>
+        <h2 id="high-score-display">HI-SCORE: 0</h2>
+        <button id="start-button" class="start-button">GAME START</button>
+    </div>
+
+    <div id="game-ui" class="ui-panel">
+        <div id="info-panel">
+            <div id="score">SCORE: 0</div>
+            <div id="power">POWER: 0</div>
+        </div>
+        <div id="controls-info">
+            [↑][↓][←][→] Move, [Space] Shoot
+        </div>
+    </div>
+    
+    <div id="game-over-panel" class="ui-panel">
+        <h1>GAME OVER</h1>
+        <p id="final-score">SCORE: 0</p>
+        <p id="final-high-score">HI-SCORE: 0</p>
+        <button id="restart-button">RESTART</button>
+    </div>
+
+    <canvas id="game-canvas"></canvas>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        // --- グローバル変数 ---
+        let scene, camera, renderer;
+        let player, starField1, starField2;
+        const bullets = [];
+        const enemies = [];
+        const powerUps = [];
+        const explosions = []; // 【新規】爆発エフェクトを管理する配列
+        const keyboard = {};
+        let score = 0;
+        let highScore = 0;
+        let playerPower = 0;
+        let gameState = 'title'; // 'title', 'playing', 'gameOver'
+        let enemyInterval;
+
+        const screenBounds = { 
+            x: { min: -15, max: 15 }, 
+            z: { min: -2, max: 4.5 } 
+        };
+        const HIGHSCORE_KEY = 'quarterShooter_highScore';
+
+        // UI要素
+        const titleScreen = document.getElementById('title-screen');
+        const gameUi = document.getElementById('game-ui');
+        const gameOverPanel = document.getElementById('game-over-panel');
+        const scoreElement = document.getElementById('score');
+        const powerElement = document.getElementById('power');
+        const highScoreDisplay = document.getElementById('high-score-display');
+        const finalScoreElement = document.getElementById('final-score');
+        const finalHighScoreElement = document.getElementById('final-high-score');
+        const startButton = document.getElementById('start-button');
+        const restartButton = document.getElementById('restart-button');
+
+        // --- 初期化 & ゲームフロー ---
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 8, 12);
+            camera.rotation.x = -0.5;
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('game-canvas') });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+
+            const ambientLight = new THREE.AmbientLight(0xcccccc, 1);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 2);
+            directionalLight.position.set(0, 1, 1);
+            scene.add(directionalLight);
+            
+            createStarfields();
+            loadHighScore();
+
+            window.addEventListener('keydown', (e) => {
+                keyboard[e.key] = true;
+                if (gameState === 'gameOver' && e.key === 'Enter') startGame();
+                if (gameState === 'title' && e.key === 'Enter') startGame();
+            });
+            window.addEventListener('keyup', (e) => keyboard[e.key] = false);
+            window.addEventListener('resize', onWindowResize, false);
+            startButton.addEventListener('click', startGame);
+            restartButton.addEventListener('click', startGame);
+
+            animate();
+        }
+
+        function loadHighScore() {
+            highScore = parseInt(localStorage.getItem(HIGHSCORE_KEY) || '0', 10);
+            highScoreDisplay.innerText = `HI-SCORE: ${highScore}`;
+        }
+
+        function saveHighScore() {
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem(HIGHSCORE_KEY, highScore.toString());
+            }
+        }
+
+        function startGame() {
+            gameState = 'playing';
+            score = 0;
+            playerPower = 0;
+
+            [...bullets, ...enemies, ...powerUps, ...explosions].forEach(obj => {
+                if (obj.isGroup) {
+                    obj.children.forEach(child => {
+                        child.geometry.dispose();
+                        child.material.dispose();
+                    });
+                } else if(obj.parent) {
+                    if (obj.geometry) obj.geometry.dispose();
+                    if (obj.material) obj.material.dispose();
+                }
+                scene.remove(obj);
+            });
+            bullets.length = 0;
+            enemies.length = 0;
+            powerUps.length = 0;
+            explosions.length = 0;
+
+            if (player) scene.remove(player);
+            createPlayer();
+
+            scoreElement.innerText = `SCORE: 0`;
+            powerElement.innerText = `POWER: 0`;
+            titleScreen.style.display = 'none';
+            gameOverPanel.style.display = 'none';
+            gameUi.style.display = 'flex';
+
+            clearInterval(enemyInterval);
+            enemyInterval = setInterval(spawnEnemy, 800);
+        }
+
+        function gameOver() {
+            gameState = 'gameOver';
+            if (player) {
+                createExplosion(player.position, player.material.color);
+                scene.remove(player);
+                player = null;
+            }
+            saveHighScore();
+            finalScoreElement.innerText = `SCORE: ${score}`;
+            finalHighScoreElement.innerText = `HI-SCORE: ${highScore}`;
+            gameUi.style.display = 'none';
+            gameOverPanel.style.display = 'flex';
+            clearInterval(enemyInterval);
+        }
+
+        // --- 【新規】破壊エフェクト作成 ---
+        function createExplosion(position, color) {
+            const explosion = new THREE.Group();
+            explosion.position.copy(position);
+            const particleCount = 30;
+            const particleSize = 0.1;
+            const particleGeometry = new THREE.BoxGeometry(particleSize, particleSize, particleSize);
+            const particleMaterial = new THREE.MeshBasicMaterial({ color: color });
+
+            for (let i = 0; i < particleCount; i++) {
+                const particle = new THREE.Mesh(particleGeometry, particleMaterial.clone());
+                particle.userData.velocity = new THREE.Vector3(
+                    (Math.random() - 0.5) * 0.5,
+                    (Math.random() - 0.5) * 0.5,
+                    (Math.random() - 0.5) * 0.5
+                );
+                particle.userData.life = 1.0;
+                explosion.add(particle);
+            }
+            explosions.push(explosion);
+            scene.add(explosion);
+        }
+        
+        // --- オブジェクト作成 & ユーティリティ ---
+        function getXBounds(z) { /* ... */ return { min: -15, max: 9.5 }; }
+        function createPlayer() { /* ... */ }
+        function createStarfields() { /* ... */ }
+        function createBullets() { /* ... */ }
+        function createPowerUp(position) { /* ... */ }
+        function spawnEnemy() { /* ... */ }
+        
+        // (省略した関数はv6から変更なし)
+        getXBounds = (z) => { const t = (z - screenBounds.z.min) / (screenBounds.z.max - screenBounds.z.min); const c = Math.max(0, Math.min(1, t)); const w = THREE.MathUtils.lerp(15, 9.5, c); return { min: -w, max: w }; };
+        createPlayer = () => { const g = new THREE.ConeGeometry(0.5, 1.5, 8); const m = new THREE.MeshStandardMaterial({ color: 0x00aaff, metalness: 0.5, roughness: 0.5 }); player = new THREE.Mesh(g, m); player.rotation.x = Math.PI / 2; player.position.y = 0.5; player.position.z = screenBounds.z.max; scene.add(player); };
+        createStarfields = () => { const g=new THREE.BufferGeometry(); const v=[]; for(let i=0;i<5000;i++)v.push(THREE.MathUtils.randFloatSpread(200),THREE.MathUtils.randFloatSpread(200),THREE.MathUtils.randFloatSpread(200)); g.setAttribute('position',new THREE.Float32BufferAttribute(v,3)); const m=new THREE.PointsMaterial({color:0xffffff,size:0.1}); starField1=new THREE.Points(g,m); starField1.position.z=-100; scene.add(starField1); starField2=new THREE.Points(g,m); starField2.position.z=-300; scene.add(starField2); };
+        createBullets = () => { if(!player)return; const cb=(o=0)=>{const g=new THREE.CylinderGeometry(0.1,0.1,1,8);const m=new THREE.MeshBasicMaterial({color:0xffdd00});const b=new THREE.Mesh(g,m);b.position.copy(player.position);b.position.x+=o;b.position.y+=0.5;b.quaternion.copy(player.quaternion);b.rotation.x+=Math.PI/2;bullets.push(b);scene.add(b);}; cb(); if(playerPower>=1){cb(-0.4);cb(0.4);} if(playerPower>=2){cb(-0.8);cb(0.8);} };
+        createPowerUp = (p) => { const g=new THREE.TetrahedronGeometry(0.5,0);const m=new THREE.MeshStandardMaterial({color:0xffff00,emissive:0xffff00,emissiveIntensity:1});const pu=new THREE.Mesh(g,m);pu.position.copy(p);powerUps.push(pu);scene.add(pu); };
+        spawnEnemy = () => { const r=Math.random(); let g,m,t; if(r<0.2){g=new THREE.TorusGeometry(0.5,0.2,8,16);m=new THREE.MeshStandardMaterial({color:0x9900ff,metalness:0.5});t='charger';}else if(r<0.5){g=new THREE.OctahedronGeometry(0.7,0);m=new THREE.MeshStandardMaterial({color:0x00ff7f,metalness:0.5});t='weaver';}else{g=new THREE.BoxGeometry(1,1,1);m=new THREE.MeshStandardMaterial({color:0xff0000,metalness:0.3});t='normal';} const e=new THREE.Mesh(g,m); e.position.set(THREE.MathUtils.randFloat(screenBounds.x.min+2,screenBounds.x.max-2),0.5,-40); e.userData={type:t,direction:Math.random()<0.5?1:-1,speedX:0.1,state:'approaching',chargeSpeed:0.5}; enemies.push(e); scene.add(e); };
+
+        // --- ゲームループ関連 ---
+        function animate() {
+            requestAnimationFrame(animate);
+            updateStarfields();
+            updateExplosions(); // 【新規】爆発エフェクトを更新
+
+            if (gameState === 'playing') {
+                updatePlayer();
+                updateBullets();
+                updateEnemies();
+                updatePowerUps();
+                checkCollisions();
+            }
+            renderer.render(scene, camera);
+        }
+        
+        let lastShotTime = 0;
+        const shotCooldown = 150;
+
+        function updatePlayer() { /* ... */ }
+        function updateBullets() { /* ... */ }
+        function updateEnemies() { /* ... */ }
+        function updatePowerUps() { /* ... */ }
+        function updateStarfields() { /* ... */ }
+        
+        // --- 【新規】爆発エフェクト更新処理 ---
+        function updateExplosions() {
+            for (let i = explosions.length - 1; i >= 0; i--) {
+                const explosion = explosions[i];
+                let allParticlesDead = true;
+
+                explosion.children.forEach(particle => {
+                    if (particle.userData.life > 0) {
+                        allParticlesDead = false;
+                        particle.position.add(particle.userData.velocity);
+                        particle.userData.velocity.multiplyScalar(0.95); // 減速
+                        particle.userData.life -= 0.02; // 寿命を減らす
+                        particle.material.opacity = particle.userData.life;
+                        particle.material.transparent = true;
+                    }
+                });
+
+                if (allParticlesDead) {
+                    // 全パーティクルが消えたらグループごと削除
+                    explosion.children.forEach(child => {
+                       child.geometry.dispose();
+                       child.material.dispose();
+                    });
+                    scene.remove(explosion);
+                    explosions.splice(i, 1);
+                }
+            }
+        }
+
+        // (省略した関数はv6から変更なし)
+        updatePlayer = () => { if(!player)return; const s=0.25; if(keyboard['ArrowLeft'])player.position.x-=s; if(keyboard['ArrowRight'])player.position.x+=s; if(keyboard['ArrowUp'])player.position.z-=s; if(keyboard['ArrowDown'])player.position.z+=s; player.position.z=Math.max(screenBounds.z.min,Math.min(screenBounds.z.max,player.position.z)); const b=getXBounds(player.position.z); player.position.x=Math.max(b.min,Math.min(b.max,player.position.x)); if(keyboard[' ']&&Date.now()-lastShotTime>shotCooldown){createBullets();lastShotTime=Date.now();} };
+        updateBullets = () => { for(let i=bullets.length-1;i>=0;i--){bullets[i].position.z-=1.0; if(bullets[i].position.z<-50){scene.remove(bullets[i]);bullets.splice(i,1);}} };
+        updateEnemies = () => { for(let i=enemies.length-1;i>=0;i--){const e=enemies[i]; switch(e.userData.type){case 'weaver':const b=getXBounds(e.position.z); e.position.x+=e.userData.direction*e.userData.speedX; if(e.position.x>b.max||e.position.x<b.min){e.userData.direction*=-1; e.position.x=Math.max(b.min,Math.min(b.max,e.position.x));} e.position.z+=0.1; break; case 'charger':if(e.userData.state==='approaching'){e.position.z+=0.2; if(e.position.z>-5&&player){e.userData.state='charging';e.userData.chargeDirection=new THREE.Vector3().subVectors(player.position,e.position).normalize();}}else if(e.userData.chargeDirection){e.position.addScaledVector(e.userData.chargeDirection,e.userData.chargeSpeed);}else{e.position.z+=0.15;} break; default:e.position.z+=0.15;break;} e.rotation.x+=0.01;e.rotation.y+=0.01; if(e.position.z>15){scene.remove(e);enemies.splice(i,1);}} };
+        updatePowerUps = () => { for(let i=powerUps.length-1;i>=0;i--){const p=powerUps[i]; p.position.z+=0.1;p.rotation.y+=0.05; if(p.position.z>15){scene.remove(p);powerUps.splice(i,1);}} };
+        updateStarfields = () => { if(starField1)starField1.position.z+=0.4; if(starField2)starField2.position.z+=0.4; if(starField1&&starField1.position.z>200)starField1.position.z=-200; if(starField2&&starField2.position.z>200)starField2.position.z=-200; };
+        
+
+        function checkCollisions() {
+            if (!player) return;
+            const playerBox = new THREE.Box3().setFromObject(player);
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const enemy = enemies[i];
+                const enemyBox = new THREE.Box3().setFromObject(enemy);
+                let hit = false;
+                for (let j = bullets.length - 1; j >= 0; j--) {
+                    const bullet = bullets[j];
+                    const bulletBox = new THREE.Box3().setFromObject(bullet);
+                    if (enemyBox.intersectsBox(bulletBox)) {
+                        createExplosion(enemy.position, enemy.material.color); // 【修正】敵破壊時にエフェクト生成
+                        scene.remove(bullet); bullets.splice(j, 1);
+                        if (Math.random() < 0.25) createPowerUp(enemy.position);
+                        scene.remove(enemy); enemies.splice(i, 1);
+                        score += 100;
+                        scoreElement.innerText = `SCORE: ${score}`;
+                        hit = true; break;
+                    }
+                }
+                if (hit) continue;
+                if (playerBox.intersectsBox(enemyBox)) {
+                    gameOver(); return;
+                }
+            }
+            for (let i = powerUps.length - 1; i >= 0; i--) {
+                const powerUp = powerUps[i];
+                const powerUpBox = new THREE.Box3().setFromObject(powerUp);
+                if (playerBox.intersectsBox(powerUpBox)) {
+                    scene.remove(powerUp); powerUps.splice(i, 1);
+                    if (playerPower < 2) {
+                        playerPower++;
+                        powerElement.innerText = `POWER: ${playerPower}`;
+                    }
+                }
+            }
+        }
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        init();
+    </script>
+</body>
+</html>
